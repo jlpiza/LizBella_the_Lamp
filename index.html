@@ -227,15 +227,35 @@
   } else {
     btnOn.addEventListener('click', () => send('on'));
     btnOff.addEventListener('click', () => send('off'));
-    const hint = location.hash.replace('#', '');
-    const auto = { ligar: 'on', desligar: 'off' }[hint];
-    if (auto) {
-      (auto === 'on' ? btnOn : btnOff).classList.add('primary');
+    const KEY = 'lizbella-ultimo';
+    const lastState = () => { try { return localStorage.getItem(KEY); } catch (e) { return null; } };
+    const saveState = a => { try { localStorage.setItem(KEY, a); } catch (e) { /* sem memória */ } };
+
+    let lastRun = 0;
+    async function trigger() {
+      const hint = location.hash.replace('#', '');
+      let auto = { ligar: 'on', desligar: 'off' }[hint];
+      if (hint === 'alternar') auto = lastState() === 'on' ? 'off' : 'on';
+      if (!auto) return;
+      if (Date.now() - lastRun < 3000) return; // evita disparar duas vezes seguidas
+      lastRun = Date.now();
+      btnOn.classList.toggle('primary', auto === 'on');
+      btnOff.classList.toggle('primary', auto === 'off');
       setStatus('Enviando…');
-      autoRun(auto).then(r => {
-        if (r === 'manual') setStatus('Toque em “' + (auto === 'on' ? 'Ligar' : 'Desligar') + '” para continuar.');
-      });
+      const r = await autoRun(auto);
+      if (r === true) saveState(auto);
+      if (r === 'manual') setStatus('Toque em “' + (auto === 'on' ? 'Ligar' : 'Desligar') + '” para continuar.');
     }
+
+    // Botões manuais também atualizam a memória do estado
+    btnOn.addEventListener('click', () => saveState('on'));
+    btnOff.addEventListener('click', () => saveState('off'));
+
+    trigger();
+    // Quando a tag reabre o app com a página já carregada, ela não recarrega: reage ao voltar à tela
+    document.addEventListener('visibilitychange', () => {
+      if (document.visibilityState === 'visible') trigger();
+    });
   }
 </script>
 </body>
