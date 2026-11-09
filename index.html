@@ -1,0 +1,188 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Luminária</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Bricolage+Grotesque:opsz,wght@12..96,400;12..96,600;12..96,800&display=swap" rel="stylesheet">
+<style>
+  :root {
+    color-scheme: light;
+    --bg: #ECE8F6;
+    --ink: #24203D;
+    --muted: #6B6590;
+    --orb-off: #CFC9E3;
+    --glow: #7FD6F5;
+    --btn: #FFFFFF;
+    --btn-ink: #24203D;
+    --err: #B3261E;
+    box-sizing: border-box;
+    padding-top: env(safe-area-inset-top, 0px);
+    padding-bottom: env(safe-area-inset-bottom, 0px);
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      color-scheme: dark;
+      --bg: #17142B;
+      --ink: #EDEAFB;
+      --muted: #9C96C2;
+      --orb-off: #2C2850;
+      --glow: #7FD6F5;
+      --btn: #26224A;
+      --btn-ink: #EDEAFB;
+      --err: #FF8A80;
+    }
+  }
+  *, *::before, *::after { box-sizing: border-box; }
+  html, body { height: 100%; margin: 0; }
+  body {
+    background: var(--bg);
+    color: var(--ink);
+    font-family: "Bricolage Grotesque", system-ui, -apple-system, "Segoe UI", sans-serif;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    gap: 2.5rem;
+    padding: 1.5rem;
+    text-align: center;
+  }
+  h1 {
+    font-size: clamp(2.2rem, 9vw, 3.4rem);
+    font-weight: 800;
+    letter-spacing: -0.02em;
+    margin: 0;
+    line-height: 1;
+  }
+  .orb {
+    width: min(58vw, 240px);
+    aspect-ratio: 1;
+    border-radius: 50%;
+    background: var(--orb-off);
+    transition: background .5s ease, box-shadow .5s ease;
+  }
+  .orb.on {
+    background: var(--glow);
+    box-shadow: 0 0 40px 10px color-mix(in srgb, var(--glow) 60%, transparent),
+                0 0 120px 40px color-mix(in srgb, var(--glow) 25%, transparent);
+  }
+  .buttons { display: flex; gap: 1rem; width: 100%; max-width: 360px; }
+  button {
+    flex: 1;
+    font: inherit;
+    font-size: 1.25rem;
+    font-weight: 600;
+    padding: 1.1rem 0;
+    border-radius: 999px;
+    border: 2px solid var(--ink);
+    background: var(--btn);
+    color: var(--btn-ink);
+    cursor: pointer;
+  }
+  button.primary { background: var(--ink); color: var(--bg); }
+  button:disabled { opacity: .5; cursor: wait; }
+  button:focus-visible { outline: 3px solid var(--glow); outline-offset: 3px; }
+  #status { min-height: 3em; max-width: 34ch; color: var(--muted); font-size: 1rem; line-height: 1.5; margin: 0; }
+  #status.err { color: var(--err); }
+  @media (prefers-reduced-motion: reduce) { .orb { transition: none; } }
+</style>
+</head>
+<body>
+  <h1>Luminária</h1>
+  <div class="orb" id="orb" aria-hidden="true"></div>
+  <div class="buttons">
+    <button id="on">Ligar</button>
+    <button id="off">Desligar</button>
+  </div>
+  <p id="status" role="status">Na primeira vez, escolha “BJ_LED” na lista que aparecer.</p>
+
+<script>
+  const SERVICE = 0xeea0;
+  const CHARS = [0xee01, 0xee02];
+  const CMD = {
+    on:  [0x69, 0x96, 0x06, 0x01, 0x01],
+    off: [0x69, 0x96, 0x02, 0x01, 0x00]
+  };
+
+  const statusEl = document.getElementById('status');
+  const orb = document.getElementById('orb');
+  const btnOn = document.getElementById('on');
+  const btnOff = document.getElementById('off');
+  let device = null;
+  let chr = null;
+
+  function setStatus(msg, isErr) {
+    statusEl.textContent = msg;
+    statusEl.classList.toggle('err', !!isErr);
+  }
+
+  async function findDevice() {
+    if (navigator.bluetooth.getDevices) {
+      try {
+        const known = await navigator.bluetooth.getDevices();
+        const d = known.find(x => x.name && x.name.startsWith('BJ_LED'));
+        if (d) return d;
+      } catch (e) { /* segue para a lista */ }
+    }
+    return navigator.bluetooth.requestDevice({
+      filters: [{ namePrefix: 'BJ_LED' }],
+      optionalServices: [SERVICE]
+    });
+  }
+
+  async function getChar() {
+    if (chr && device && device.gatt.connected) return chr;
+    if (!device) {
+      device = await findDevice();
+      device.addEventListener('gattserverdisconnected', () => { chr = null; });
+    }
+    setStatus('Conectando…');
+    const server = await device.gatt.connect();
+    const svc = await server.getPrimaryService(SERVICE);
+    for (const id of CHARS) {
+      try { chr = await svc.getCharacteristic(id); return chr; } catch (e) { /* tenta a próxima */ }
+    }
+    throw new Error('A luminária não respondeu no canal esperado.');
+  }
+
+  async function send(action) {
+    btnOn.disabled = btnOff.disabled = true;
+    try {
+      const c = await getChar();
+      const data = new Uint8Array(CMD[action]);
+      if (c.properties && c.properties.writeWithoutResponse && c.writeValueWithoutResponse) {
+        await c.writeValueWithoutResponse(data);
+      } else if (c.writeValueWithResponse) {
+        await c.writeValueWithResponse(data);
+      } else {
+        await c.writeValue(data);
+      }
+      orb.classList.toggle('on', action === 'on');
+      setStatus(action === 'on' ? 'Ligada.' : 'Desligada.');
+    } catch (e) {
+      if (e.name === 'NotFoundError') {
+        setStatus('Nenhuma luminária escolhida. Toque de novo e selecione “BJ_LED”.', true);
+      } else {
+        device = null; chr = null;
+        setStatus('Não foi possível falar com a luminária. Confira se ela está na tomada e se o app dela está fechado, e toque de novo.', true);
+      }
+    } finally {
+      btnOn.disabled = btnOff.disabled = false;
+    }
+  }
+
+  if (!navigator.bluetooth) {
+    btnOn.disabled = btnOff.disabled = true;
+    setStatus('Este navegador não tem Bluetooth. No Android, abra no Chrome. No iPhone, abra no app Bluefy.', true);
+  } else {
+    btnOn.addEventListener('click', () => send('on'));
+    btnOff.addEventListener('click', () => send('off'));
+    const hint = location.hash.replace('#', '');
+    if (hint === 'ligar') btnOn.classList.add('primary');
+    if (hint === 'desligar') btnOff.classList.add('primary');
+  }
+</script>
+</body>
+</html>
