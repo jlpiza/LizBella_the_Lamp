@@ -99,8 +99,9 @@
   <p id="status" role="status">Na primeira vez, escolha “BJ_LED” na lista que aparecer.</p>
 
 <script>
-  const SERVICE = 0xeea0;
-  const CHARS = [0xee01, 0xee02];
+  // UUIDs completos: alguns navegadores (como o Bluefy) não aceitam a forma curta
+  const SERVICE = '0000eea0-0000-1000-8000-00805f9b34fb';
+  const CHARS = ['0000ee01-0000-1000-8000-00805f9b34fb', '0000ee02-0000-1000-8000-00805f9b34fb'];
   const CMD = {
     on:  [0x69, 0x96, 0x06, 0x01, 0x01],
     off: [0x69, 0x96, 0x02, 0x01, 0x00]
@@ -112,20 +113,30 @@
   const btnOff = document.getElementById('off');
   let device = null;
   let chr = null;
+  let stage = '';
 
   function setStatus(msg, isErr) {
     statusEl.textContent = msg;
     statusEl.classList.toggle('err', !!isErr);
   }
 
+  function describe(e) {
+    if (e === undefined || e === null) return 'sem detalhes';
+    if (typeof e === 'string') return e;
+    const parts = [];
+    if (e.name) parts.push(e.name);
+    if (e.message) parts.push(e.message);
+    if (e.code !== undefined) parts.push('código ' + e.code);
+    if (parts.length) return parts.join(': ');
+    try { return JSON.stringify(e); } catch (x) { return String(e); }
+  }
+
+  function watchDisconnect(d) {
+    d.addEventListener('gattserverdisconnected', () => { chr = null; });
+  }
+
   async function findDevice() {
-    if (navigator.bluetooth.getDevices) {
-      try {
-        const known = await navigator.bluetooth.getDevices();
-        const d = known.find(x => x.name && x.name.startsWith('BJ_LED'));
-        if (d) return d;
-      } catch (e) { /* segue para a lista */ }
-    }
+    stage = 'procurar';
     return navigator.bluetooth.requestDevice({
       filters: [{ namePrefix: 'BJ_LED' }],
       optionalServices: [SERVICE]
@@ -133,6 +144,7 @@
   }
 
   async function connectWithRetry(d) {
+    stage = 'conectar';
     try {
       return await d.gatt.connect();
     } catch (e) {
@@ -140,7 +152,7 @@
       const ctrl = new AbortController();
       const seen = new Promise((resolve, reject) => {
         d.addEventListener('advertisementreceived', resolve, { once: true });
-        setTimeout(() => reject(new Error('timeout')), 6000);
+        setTimeout(() => reject(new Error('a luminária não apareceu')), 6000);
       });
       await d.watchAdvertisements({ signal: ctrl.signal });
       try { await seen; } finally { ctrl.abort(); }
@@ -148,57 +160,65 @@
     }
   }
 
-  async function autoRun(action) {
-    if (!navigator.bluetooth.getDevices) return false;
-    let known = [];
-    try { known = await navigator.bluetooth.getDevices(); } catch (e) { return false; }
-    const d = known.find(x => x.name && x.name.startsWith('BJ_LED'));
-    if (!d) return false;
-    device = d;
-    device.addEventListener('gattserverdisconnected', () => { chr = null; });
-    return send(action);
-  }
-
   async function getChar() {
     if (chr && device && device.gatt.connected) return chr;
     if (!device) {
       device = await findDevice();
-      device.addEventListener('gattserverdisconnected', () => { chr = null; });
+      watchDisconnect(device);
     }
     setStatus('Conectando…');
     const server = await connectWithRetry(device);
+    stage = 'serviço';
     const svc = await server.getPrimaryService(SERVICE);
+    stage = 'canal';
     for (const id of CHARS) {
       try { chr = await svc.getCharacteristic(id); return chr; } catch (e) { /* tenta a próxima */ }
     }
-    throw new Error('A luminária não respondeu no canal esperado.');
+    throw new Error('canal EE01/EE02 não encontrado');
+  }
+
+  async function write(c, data) {
+    stage = 'enviar';
+    const p = c.properties || {};
+    if (p.writeWithoutResponse && c.writeValueWithoutResponse) {
+      try { return await c.writeValueWithoutResponse(data); } catch (e) { /* tenta outro modo */ }
+    }
+    if (c.writeValueWithResponse) {
+      try { return await c.writeValueWithResponse(data); } catch (e) { /* tenta outro modo */ }
+    }
+    return c.writeValue(data);
   }
 
   async function send(action) {
     btnOn.disabled = btnOff.disabled = true;
     try {
       const c = await getChar();
-      const data = new Uint8Array(CMD[action]);
-      if (c.properties && c.properties.writeWithoutResponse && c.writeValueWithoutResponse) {
-        await c.writeValueWithoutResponse(data);
-      } else if (c.writeValueWithResponse) {
-        await c.writeValueWithResponse(data);
-      } else {
-        await c.writeValue(data);
-      }
+      await write(c, new Uint8Array(CMD[action]));
       orb.classList.toggle('on', action === 'on');
       setStatus(action === 'on' ? 'Ligada.' : 'Desligada.');
       return true;
     } catch (e) {
-      if (e.name === 'NotFoundError') {
+      if (e && e.name === 'NotFoundError' && stage === 'procurar') {
         setStatus('Nenhuma luminária escolhida. Toque de novo e selecione “BJ_LED”.', true);
       } else {
         device = null; chr = null;
-        setStatus('Não foi possível falar com a luminária. Confira se ela está na tomada e se o app dela está fechado, e toque de novo. (' + e.name + ': ' + e.message + ')', true);
+        setStatus('Falhou na etapa “' + stage + '” (' + describe(e) + '). Toque de novo.', true);
       }
+      return false;
     } finally {
       btnOn.disabled = btnOff.disabled = false;
     }
+  }
+
+  async function autoRun(action) {
+    if (!navigator.bluetooth.getDevices) return 'manual';
+    let known = [];
+    try { known = await navigator.bluetooth.getDevices(); } catch (e) { return 'manual'; }
+    const d = known.find(x => x.name && x.name.startsWith('BJ_LED'));
+    if (!d) return 'manual';
+    device = d;
+    watchDisconnect(device);
+    return send(action);
   }
 
   if (!navigator.bluetooth) {
@@ -212,8 +232,8 @@
     if (auto) {
       (auto === 'on' ? btnOn : btnOff).classList.add('primary');
       setStatus('Enviando…');
-      autoRun(auto).then(ok => {
-        if (!ok) setStatus('Toque em “' + (auto === 'on' ? 'Ligar' : 'Desligar') + '” para continuar.');
+      autoRun(auto).then(r => {
+        if (r === 'manual') setStatus('Toque em “' + (auto === 'on' ? 'Ligar' : 'Desligar') + '” para continuar.');
       });
     }
   }
