@@ -194,7 +194,7 @@
         setStatus('Nenhuma luminária escolhida. Toque de novo e selecione “BJ_LED”.', true);
       } else {
         device = null; chr = null;
-        setStatus('Não foi possível falar com a luminária. Confira se ela está na tomada e se o app dela está fechado, e toque de novo.', true);
+        setStatus('Não foi possível falar com a luminária. Confira se ela está na tomada e se o app dela está fechado, e toque de novo. (' + e.name + ': ' + e.message + ')', true);
       }
     } finally {
       btnOn.disabled = btnOff.disabled = false;
